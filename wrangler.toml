@@ -1,0 +1,9 @@
+name = "chook-check-api"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "chook-check"
+database_id = "local"
+migrations_dir = "migrations"
