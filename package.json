@@ -1,6 +1,17 @@
 {
   "name": "chook-check-api",
   "version": "0.1.0",
+  "description": "Community price-data backend for the Chook Check browser extension",
+  "license": "AGPL-3.0-only",
+  "author": "Nevenit <Nevenit@outlook.com>",
+  "homepage": "https://github.com/Nevenit/chook-check-api",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nevenit/chook-check-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nevenit/chook-check-api/issues"
+  },
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
