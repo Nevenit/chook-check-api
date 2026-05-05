@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import type { App } from "./lib/types";
+import type { App, Bindings } from "./lib/types";
 import { contributor } from "./routes/contributor";
 import { observations } from "./routes/observations";
 import { products } from "./routes/products";
 import { trends } from "./routes/trends";
+import { cleanupRateLimits } from "./cron";
 
 const app = new Hono<App>();
 
@@ -39,4 +40,9 @@ app.route("/api/products", products);
 app.route("/api/trends", trends);
 app.route("/api/contributor", contributor);
 
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled: async (_controller, env) => {
+    await cleanupRateLimits(env.DB);
+  },
+} satisfies ExportedHandler<Bindings>;

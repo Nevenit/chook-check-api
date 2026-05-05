@@ -7,3 +7,6 @@ binding = "DB"
 database_name = "chook-check"
 database_id = "3183660c-38a8-418c-a360-388acd20869c"
 migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 * * * *"]
