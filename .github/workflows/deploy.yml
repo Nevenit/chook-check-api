@@ -1,0 +1,31 @@
+name: Deploy
+
+# Triggered only by version tags (e.g. `git tag v0.1.1 && git push --tags`).
+# Requires the `CLOUDFLARE_API_TOKEN` repo secret to be set
+# (Settings -> Secrets and variables -> Actions). The token needs the
+# "Workers Scripts:Edit" and "D1:Edit" permissions for the account.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Deploy to Cloudflare Workers
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
