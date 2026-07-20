@@ -23,7 +23,18 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm run format:check
+
       - run: npm test
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply chook-check --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
