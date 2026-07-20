@@ -25,7 +25,13 @@ describe("median", () => {
 
 describe("promoFrequency", () => {
   it("calculates proportions for each promo type", () => {
-    const types = ["member_price", "member_price", "none", "half_price", "none"];
+    const types = [
+      "member_price",
+      "member_price",
+      "none",
+      "half_price",
+      "none",
+    ];
     const result = promoFrequency(types);
     expect(result["member_price"]).toBeCloseTo(0.4);
     expect(result["half_price"]).toBeCloseTo(0.2);

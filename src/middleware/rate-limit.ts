@@ -1,15 +1,18 @@
 import { createMiddleware } from "hono/factory";
 import type { App } from "../lib/types";
+import type { Context } from "hono";
+import { hmacIdentifier } from "../lib/crypto";
+import { authenticateContributor } from "../lib/auth";
 
 interface RateLimitConfig {
   limit: number;
   windowMs: number;
-  keyFn: (c: any) => string | null;
+  keyFn: (c: Context<App>) => string | null | Promise<string | null>;
 }
 
 export function rateLimit(config: RateLimitConfig) {
   return createMiddleware<App>(async (c, next) => {
-    const key = config.keyFn(c);
+    const key = await config.keyFn(c);
     if (!key) {
       return next();
     }
@@ -80,7 +83,10 @@ export const postRateLimit = rateLimit({
   windowMs: ONE_HOUR,
   keyFn: (c) => {
     try {
-      const data = c.req.valid("json");
+      const readValidatedJson = c.req.valid as unknown as (target: "json") => {
+        contributorId?: string;
+      };
+      const data = readValidatedJson("json");
       return data?.contributorId ?? null;
     } catch {
       return null;
@@ -92,10 +98,44 @@ export const postRateLimit = rateLimit({
 export const getRateLimit = rateLimit({
   limit: 120,
   windowMs: ONE_HOUR,
-  keyFn: (c) =>
-    c.req.header("CF-Connecting-IP") ??
-    c.req.header("x-forwarded-for") ??
-    "unknown",
+  keyFn: async (c) => {
+    const ip =
+      c.req.header("CF-Connecting-IP") ??
+      c.req.header("x-forwarded-for") ??
+      "unknown";
+    return `ip_hmac:${await hmacIdentifier(c.env.RATE_LIMIT_SECRET, ip)}`;
+  },
+});
+
+/** Registration is deliberately scarce because public aggregates count contributors. */
+export const registrationRateLimit = rateLimit({
+  limit: 3,
+  windowMs: 24 * ONE_HOUR,
+  keyFn: async (c) => {
+    const ip =
+      c.req.header("CF-Connecting-IP") ??
+      c.req.header("x-forwarded-for") ??
+      "unknown";
+    return `registration_ip_hmac:${await hmacIdentifier(c.env.RATE_LIMIT_SECRET, ip)}`;
+  },
+});
+
+export const authenticatedSubmitRateLimit = rateLimit({
+  limit: 60,
+  windowMs: ONE_HOUR,
+  keyFn: async (c) => {
+    const contributorId = await authenticateContributor(c, "submit");
+    return contributorId ? `contributor:${contributorId}` : null;
+  },
+});
+
+export const authenticatedDeleteRateLimit = rateLimit({
+  limit: 5,
+  windowMs: ONE_HOUR,
+  keyFn: async (c) => {
+    const contributorId = await authenticateContributor(c, "deletion");
+    return contributorId ? `deletion:${contributorId}` : null;
+  },
 });
 
 /** 5 requests/hour keyed by contributor ID in URL param. */

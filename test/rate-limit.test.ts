@@ -1,67 +1,49 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { cleanDb } from "./helpers";
+import { makeV2Observation, postV2, registerContributor } from "./v2-helpers";
 
-beforeEach(async () => {
-  await cleanDb();
-});
-
-const validBody = {
-  contributorId: "00000000-0000-0000-0000-000000000001",
-  observations: [
-    {
-      productId: "woolworths:1",
-      productName: "Test Product",
-      storeChain: "woolworths",
-      priceCents: 500,
-      isPersonalised: false,
-      observedAt: new Date().toISOString(),
-    },
-  ],
-};
+beforeEach(cleanDb);
 
 describe("rate limiting", () => {
-  it("allows requests within the limit", async () => {
-    const res = await SELF.fetch("http://localhost/api/observations", {
+  it("limits contributor registration per HMAC-pseudonymised IP", async () => {
+    const ip = "203.0.113.88";
+    for (let index = 0; index < 3; index++) {
+      const response = await SELF.fetch(
+        "http://localhost/api/v2/contributors",
+        { method: "POST", headers: { "CF-Connecting-IP": ip } },
+      );
+      expect(response.status).toBe(201);
+    }
+    const blocked = await SELF.fetch("http://localhost/api/v2/contributors", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(validBody),
+      headers: { "CF-Connecting-IP": ip },
     });
-    expect(res.status).toBe(201);
+    expect(blocked.status).toBe(429);
+
+    const keys = await env.DB.prepare("SELECT key FROM rate_limits").all<{
+      key: string;
+    }>();
+    expect(keys.results?.some((row) => row.key.includes(ip))).toBe(false);
+    expect(keys.results?.[0]?.key).toMatch(
+      /^registration_ip_hmac:[0-9a-f]{64}$/,
+    );
   });
 
-  it("returns 429 when POST limit exceeded", async () => {
-    // Submit 61 requests (limit is 60/hour)
-    for (let i = 0; i < 60; i++) {
-      await SELF.fetch("http://localhost/api/observations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(validBody),
+  it("limits authenticated submissions per server-issued contributor", async () => {
+    const credentials = await registerContributor();
+    for (let index = 0; index < 60; index++) {
+      const response = await postV2(credentials.submitToken, {
+        mode: "history",
+        observations: [makeV2Observation()],
       });
+      expect(response.status).toBe(201);
     }
-    const res = await SELF.fetch("http://localhost/api/observations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(validBody),
+    const blocked = await postV2(credentials.submitToken, {
+      mode: "history",
+      observations: [makeV2Observation()],
     });
-    expect(res.status).toBe(429);
-    const body = await res.json<{ error: string }>();
-    expect(body.error).toBe("rate_limited");
-  });
-
-  it("includes Retry-After header on 429", async () => {
-    for (let i = 0; i < 60; i++) {
-      await SELF.fetch("http://localhost/api/observations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(validBody),
-      });
-    }
-    const res = await SELF.fetch("http://localhost/api/observations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(validBody),
-    });
-    expect(res.headers.get("Retry-After")).toBeTruthy();
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBeTruthy();
   });
 });

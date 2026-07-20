@@ -1,80 +1,64 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import { cleanDb } from "./helpers";
+import { makeV2Observation, postV2, registerContributor } from "./v2-helpers";
 
-beforeEach(async () => {
-  await cleanDb();
-});
+beforeEach(cleanDb);
 
-const CONTRIBUTOR_ID = "00000000-0000-0000-0000-000000000001";
-
-async function seedObservations(count: number) {
-  for (let i = 0; i < count; i++) {
-    await env.DB.prepare(
-      `INSERT INTO observations (product_id, product_name, store_chain,
-        price_cents, is_personalised, contributor_id, observed_at, submitted_at)
-       VALUES (?, ?, 'woolworths', 500, 0, ?, ?, ?)`,
-    )
-      .bind(
-        `woolworths:${i}`,
-        `Product ${i}`,
-        CONTRIBUTOR_ID,
-        new Date().toISOString(),
-        new Date().toISOString(),
-      )
-      .run();
-  }
+async function deleteV2(token: string) {
+  return SELF.fetch("http://localhost/api/v2/contributor", {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }
 
-describe("DELETE /api/contributor/:contributorId", () => {
-  it("deletes all observations for a contributor", async () => {
-    await seedObservations(5);
-    const res = await SELF.fetch(
-      `http://localhost/api/contributor/${CONTRIBUTOR_ID}`,
-      { method: "DELETE" },
-    );
-    expect(res.status).toBe(200);
-    const json = await res.json<{ deleted: number }>();
-    expect(json.deleted).toBe(5);
+describe("DELETE /api/v2/contributor", () => {
+  it("deletes only the contributor authenticated by the deletion token", async () => {
+    const first = await registerContributor("203.0.113.1");
+    const second = await registerContributor("203.0.113.2");
+    await postV2(first.submitToken, {
+      mode: "history",
+      observations: [makeV2Observation()],
+    });
+    await postV2(second.submitToken, {
+      mode: "history",
+      observations: [makeV2Observation()],
+    });
 
-    // Verify DB is clean
-    const row = await env.DB.prepare(
-      "SELECT COUNT(*) as cnt FROM observations WHERE contributor_id = ?",
-    )
-      .bind(CONTRIBUTOR_ID)
-      .first<{ cnt: number }>();
-    expect(row?.cnt).toBe(0);
+    const response = await deleteV2(first.deletionToken);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ deleted: 1 });
+    const remaining = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM observations_v2",
+    ).first<{ count: number }>();
+    expect(remaining?.count).toBe(1);
   });
 
-  it("returns deleted=0 for unknown contributor", async () => {
-    const res = await SELF.fetch(
-      `http://localhost/api/contributor/${CONTRIBUTOR_ID}`,
-      { method: "DELETE" },
-    );
-    expect(res.status).toBe(200);
-    const json = await res.json<{ deleted: number }>();
-    expect(json.deleted).toBe(0);
+  it("does not accept a submit token for deletion", async () => {
+    const credentials = await registerContributor();
+    expect((await deleteV2(credentials.submitToken)).status).toBe(401);
   });
 
-  it("does not delete other contributors' data", async () => {
-    await seedObservations(3);
-    await env.DB.prepare(
-      `INSERT INTO observations (product_id, product_name, store_chain,
-        price_cents, is_personalised, contributor_id, observed_at, submitted_at)
-       VALUES ('woolworths:99', 'Other', 'woolworths', 500, 0,
-        '00000000-0000-0000-0000-000000000002', ?, ?)`,
-    )
-      .bind(new Date().toISOString(), new Date().toISOString())
-      .run();
+  it("does not accept a deletion token for submission", async () => {
+    const credentials = await registerContributor();
+    const response = await postV2(credentials.deletionToken, {
+      mode: "history",
+      observations: [makeV2Observation()],
+    });
+    expect(response.status).toBe(401);
+  });
 
-    await SELF.fetch(
-      `http://localhost/api/contributor/${CONTRIBUTOR_ID}`,
+  it("invalidates the contributor after deletion", async () => {
+    const credentials = await registerContributor();
+    expect((await deleteV2(credentials.deletionToken)).status).toBe(200);
+    expect((await deleteV2(credentials.deletionToken)).status).toBe(401);
+  });
+
+  it("returns 410 for UUID-only legacy deletion", async () => {
+    const response = await SELF.fetch(
+      "http://localhost/api/contributor/00000000-0000-0000-0000-000000000001",
       { method: "DELETE" },
     );
-
-    const row = await env.DB.prepare(
-      "SELECT COUNT(*) as cnt FROM observations",
-    ).first<{ cnt: number }>();
-    expect(row?.cnt).toBe(1);
+    expect(response.status).toBe(410);
   });
 });

@@ -317,7 +317,9 @@ export async function getTrends(
     const prevResults = prevObs.results ?? [];
 
     // Check quorum in both periods
-    const currentContributors = new Set(currentResults.map((r) => r.contributor_id));
+    const currentContributors = new Set(
+      currentResults.map((r) => r.contributor_id),
+    );
     const prevContributors = new Set(prevResults.map((r) => r.contributor_id));
 
     if (currentContributors.size < QUORUM || prevContributors.size < QUORUM) {

@@ -34,7 +34,13 @@ trends.get(
   async (c) => {
     const { period, chain, category, limit } = c.req.valid("query");
     const periodDays = PERIOD_DAYS[period];
-    const results = await getTrends(c.env.DB, periodDays, limit, chain, category);
+    const results = await getTrends(
+      c.env.DB,
+      periodDays,
+      limit,
+      chain,
+      category,
+    );
     return c.json({ trends: results });
   },
 );

@@ -1,5 +1,7 @@
 export type Bindings = {
   DB: D1Database;
+  RATE_LIMIT_SECRET: string;
+  ALLOWED_EXTENSION_ORIGINS?: string;
 };
 
 export type App = {
@@ -26,6 +28,32 @@ export interface ProductStats {
   contributorCount: number;
   priceHistory: DayBucket[];
   promoFrequency: Record<string, number>;
+  differentialSignal?: DifferentialSignal;
+  observerEffect?: ObserverEffect;
+}
+
+export interface DifferentialSignal {
+  classification:
+    | "insufficient_evidence"
+    | "contextual_difference"
+    | "possible_differential_pricing";
+  confidence: "none" | "low" | "moderate";
+  explanation: string;
+  matchedContributorCount: number;
+  priceGroups: Array<{ priceCents: number; contributorCount: number }>;
+}
+
+export interface ObserverEffect {
+  comparisonCount: number;
+  contributorCount: number;
+  changedCount: number;
+  medianChangeCents: number | null;
+}
+
+export interface ContributorCredentials {
+  contributorId: string;
+  submitToken: string;
+  deletionToken: string;
 }
 
 export interface DayBucket {
