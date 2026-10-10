@@ -76,10 +76,10 @@ These controls raise the cost of Sybil submissions; they do not eliminate coordi
 
 ## Local development
 
-Requires Node.js 20 or newer.
+Requires Node.js 24 (see `.nvmrc`).
 
 ```bash
-npm install
+npm ci --include=dev
 npm run dev
 npm run typecheck
 npm run lint
