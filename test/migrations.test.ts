@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { env } from "cloudflare:test";
 import migration0000 from "../migrations/0000_create_tables.sql?raw";
 import migration0001 from "../migrations/0001_v2_privacy_and_auth.sql?raw";
+import migration0002 from "../migrations/0002_free_plan_pipeline.sql?raw";
 
 async function applyMigration(sql: string): Promise<void> {
   const withoutComments = sql.replace(/^--.*$/gm, "");
@@ -15,6 +16,7 @@ describe("D1 migrations", () => {
   it("apply in order to a clean database", async () => {
     await applyMigration(migration0000);
     await applyMigration(migration0001);
+    await applyMigration(migration0002);
 
     const tables = await env.DB.prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table'`,
@@ -25,5 +27,14 @@ describe("D1 migrations", () => {
     expect(names).toContain("contributors");
     expect(names).toContain("observations_v2");
     expect(names).toContain("daily_product_aggregates");
+    for (const table of [
+      "dirty_products",
+      "product_stats",
+      "snapshot_chunks",
+      "snapshot_meta",
+      "retention_progress",
+    ]) {
+      expect(names).toContain(table);
+    }
   });
 });

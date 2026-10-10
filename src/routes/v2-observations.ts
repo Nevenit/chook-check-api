@@ -3,11 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import type { App } from "../lib/types";
 import { authenticateContributor } from "../lib/auth";
 import { submitObservationsV2Schema } from "../lib/schemas";
-import {
-  insertObservationV2,
-  isDuplicateV2,
-  shouldQuarantineV2,
-} from "../db/queries-v2";
+import { submitObservationsV2 } from "../lib/ingest";
 import { authenticatedSubmitRateLimit } from "../middleware/rate-limit";
 
 const v2Observations = new Hono<App>();
@@ -38,37 +34,13 @@ v2Observations.post(
       );
     }
     const request = c.req.valid("json");
-    let accepted = 0;
-    let duplicates = 0;
-    let rejected = 0;
-    const reasons: string[] = [];
-
-    for (const observation of request.observations) {
-      if (
-        await isDuplicateV2(
-          c.env.DB,
-          contributorId,
-          observation.clientObservationId,
-        )
-      ) {
-        duplicates++;
-        continue;
-      }
-      const quarantineReason = await shouldQuarantineV2(c.env.DB, observation);
-      await insertObservationV2(
+    const { accepted, duplicates, rejected, reasons } =
+      await submitObservationsV2(
         c.env.DB,
         contributorId,
         request.mode,
-        observation,
-        quarantineReason,
+        request.observations,
       );
-      if (quarantineReason) {
-        rejected++;
-        reasons.push(`${observation.clientObservationId}: quarantined`);
-      } else {
-        accepted++;
-      }
-    }
     return c.json(
       {
         accepted,

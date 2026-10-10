@@ -54,6 +54,12 @@ const SCHEMA_STATEMENTS = [
     created_at TEXT NOT NULL,
     PRIMARY KEY (product_id, observation_date)
   )`,
+  "CREATE INDEX IF NOT EXISTS idx_v2_observed ON observations_v2(client_observed_at)",
+  "CREATE TABLE IF NOT EXISTS dirty_products (product_id TEXT PRIMARY KEY, marked_at TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS product_stats (product_id TEXT PRIMARY KEY, public INTEGER NOT NULL CHECK (public IN (0, 1)), stats_json TEXT, refreshed_at TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS snapshot_chunks (generation INTEGER NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (generation, seq))",
+  "CREATE TABLE IF NOT EXISTS snapshot_meta (id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL, etag TEXT NOT NULL, generated_at TEXT NOT NULL, product_count INTEGER NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS retention_progress (observation_date TEXT PRIMARY KEY, materialized_at TEXT NOT NULL)",
 ];
 
 /** Ensure the database schema exists and clean all tables between tests. */
@@ -66,4 +72,13 @@ export async function cleanDb() {
   await env.DB.exec("DELETE FROM observations_v2");
   await env.DB.exec("DELETE FROM daily_product_aggregates");
   await env.DB.exec("DELETE FROM contributors");
+  for (const table of [
+    "dirty_products",
+    "product_stats",
+    "snapshot_chunks",
+    "snapshot_meta",
+    "retention_progress",
+  ]) {
+    await env.DB.exec(`DELETE FROM ${table}`);
+  }
 }
