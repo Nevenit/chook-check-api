@@ -44,6 +44,11 @@ export async function buildSnapshot(
     return { changed: false, productCount: results.length };
 
   const generation = (meta?.generation ?? 0) + 1;
+  // A build that failed after writing chunks left an unpublished generation.
+  await db
+    .prepare(`DELETE FROM snapshot_chunks WHERE generation >= ?1`)
+    .bind(generation)
+    .run();
   const body = `{"generatedAt":${JSON.stringify(now.toISOString())},"products":${products}}`;
   for (const [seq, chunk] of chunkText(body, chunkChars).entries()) {
     await db

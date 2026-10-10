@@ -104,6 +104,18 @@ describe("bulk snapshot", () => {
     expect(results.map((row) => row.generation)).toEqual([2, 3]);
   });
 
+  it("recovers from a build that failed after writing chunks", async () => {
+    await putStats("coles:1", true);
+    await env.DB.prepare(
+      "INSERT INTO snapshot_chunks (generation, seq, body) VALUES (1, 0, 'partial'), (1, 3, 'stale')",
+    ).run();
+    await buildSnapshot(env.DB, NOW);
+    const response = await get("/api/v2/snapshots/products");
+    expect((await response.json<{ products: unknown[] }>()).products).toEqual([
+      product("coles:1"),
+    ]);
+  });
+
   it("builds within the query budget", async () => {
     for (let i = 0; i < 50; i++) await putStats(`coles:${i}`, true);
     const counter = countQueries(env.DB);
