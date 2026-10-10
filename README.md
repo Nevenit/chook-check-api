@@ -45,7 +45,7 @@ D1 stores SHA-256 token hashes, never the raw tokens. A contributor ID alone is 
 - A product is public only when a recent day qualifies: the latest UTC day within the last 90 days with at least five distinct contributors. Its median, minimum, and maximum are the product's current price.
 - `observationCount` and `contributorCount` cover non-quarantined raw rows from the last 180 days; `promoFrequency` covers balanced samples from the same period, with no offer counted as `none`.
 - Published fields are exactly: `productId`, `productName`, `brand`, `storeChain`, `quorum` (always `true`), `currentMedianCents`, `minCents`, `maxCents`, `observationCount`, `contributorCount`, and `promoFrequency`. Price history and signals are not published.
-- Stats are precomputed. A product is queued when it receives an accepted observation or loses a contributor's data, and its stats are recomputed at most once a day; public products are also rechecked daily so ageing data leaves the snapshot. The snapshot is republished every 30 minutes when its content changes, and its `ETag` is a hash of that content.
+- Stats are precomputed. A product is queued when it receives an accepted observation, and its stats are recomputed at most once a day; public products are also rechecked daily so ageing data leaves the snapshot. When a contributor deletes their data, their products are recomputed on the next run, so their prices leave the published stats within about half an hour. The snapshot is republished every 30 minutes when its content changes, and its `ETag` is a hash of that content.
 - Incoming extreme outliers are quarantined only after five comparable same-product/day/offer values exist; the bounds are below one-fifth or above five times that median.
 - Quarantined values are excluded from public results.
 
@@ -116,22 +116,23 @@ Never edit a migration already applied to a real environment. Add a new numbered
 
 ## Workers Free operating envelope
 
-Workers Free allows 50 D1 queries per invocation, 10 ms of CPU per request or cron run, 5 million rows read and 100,000 rows written per day, and a 500 MB database. Every handler and job is tested to stay within 40 queries.
+Workers Free allows 50 D1 queries per invocation, 10 ms of CPU per request or cron run, 5 million rows read and 100,000 rows written per day, and a 500 MB database. The ingestion, stats refresh, snapshot build, and retention functions are tested to stay within 40 queries, and an idle refresh run is tested to read fewer than 50 rows. The route and cron totals below include middleware and were measured, not tested.
 
-Measured on 2026-10-10 against local `wrangler dev` with synthetic data: 30 contributors, about 40 observations each per day, 4,000 products, 190,000 raw rows in the 180-day window, and a 101 MB database.
+Measured on 2026-10-10 against local `wrangler dev` with synthetic data: 30 contributors, about 40 observations each per day, 4,000 products, 190,000 raw rows in the 180-day window, and a 101 MB database. Steady state was simulated by ageing every product's last refresh by 25 hours and marking the 729 products observed in the last day as changed.
 
-| Invocation                               | D1 queries | Rows read               | Rows written |
-| ---------------------------------------- | ---------- | ----------------------- | ------------ |
-| `GET /api/v2/snapshots/products` (200)   | 4          | 2                       | 2            |
-| The same with a matching `If-None-Match` | 3          | 3                       | 1            |
-| `GET /api/v2/products/:id/stats`         | 3          | 1                       | 2            |
-| `POST /api/v2/observations` (50 rows)    | 8          | 1,156                   | 353          |
-| Every-minute maintenance run             | 6–16       | 7–619,000 (mean 56,000) | 0–1,567      |
-| 30-minute snapshot publication           | 5          | 4,002                   | 3            |
+| Invocation                               | D1 queries | Rows read     | Rows written |
+| ---------------------------------------- | ---------- | ------------- | ------------ |
+| `GET /api/v2/snapshots/products` (200)   | 4          | 2             | 2            |
+| The same with a matching `If-None-Match` | 3          | 3             | 1            |
+| `GET /api/v2/products/:id/stats`         | 3          | 1             | 2            |
+| `POST /api/v2/observations` (50 rows)    | 8          | 1,238         | 403          |
+| Every-minute run, idle                   | 5          | 5             | 0            |
+| Every-minute run, refreshing 100         | 9–10       | 9,000–586,000 | 93–300       |
+| 30-minute snapshot run                   | 3–7        | about 225     | 0–3          |
 
-The served snapshot was 28 KB for 112 public products. Before this design, one snapshot request made 5,167 queries and read 546,000 rows at the same scale.
+The served snapshot was 28 KB for 110 public products. Before this design, one snapshot request made 5,167 queries and read 546,000 rows at the same scale.
 
-Daily totals at that scale are estimated from these measurements. Rows read: about 1.6 million for stats refreshes, 0.2 million for snapshot publication, and well under 0.1 million for uploads and downloads. Rows written: about 7 per accepted observation, a comparable amount when it expires (not measured separately), and a few per refreshed product. Rows read is the binding limit and grows with the number of raw rows. The Free plan should therefore support about 80 contributors at that rate (roughly 3,000 accepted observations a day); the database size limit would be reached at about 940,000 raw rows. CPU time could not be measured locally; check the Worker's CPU metrics after deployment.
+A simulated day's refreshes (729 changed products and 110 public rechecks) read 1.35 million rows and wrote 2,193 over eight runs. Adding idle minutes, snapshot runs, and uploads gives about 1.45 million rows read per day, 29% of the Free allowance. Rows written come to about 8 per accepted observation, a comparable amount when it expires (not measured separately), and a few per refreshed product: about 22,000 a day. Rows read is the binding limit and grows with the raw rows behind each changed product. The Free plan should therefore support about 100 contributors at that rate (roughly 4,000 accepted observations a day); the database size limit would be reached at about 940,000 raw rows. CPU time could not be measured locally; check the Worker's CPU metrics after deployment.
 
 Workers Paid raises these limits and allows a faster refresh interval.
 
@@ -140,7 +141,7 @@ Workers Paid raises these limits and allows a faster refresh interval.
 - [Hono](https://hono.dev) request routing.
 - [Zod](https://zod.dev) strict validation.
 - Cloudflare Workers and D1.
-- Two cron triggers: every minute (rate-limit cleanup, one raw-retention step, one stats refresh batch of up to 100 products) and every 30 minutes (snapshot publication), each within the Free plan's 50 D1 queries per invocation.
+- Two cron triggers: every minute (one raw-retention step and one stats refresh batch of up to 100 products) and every 30 minutes (rate-limit cleanup and snapshot publication), each within the Free plan's 50 D1 queries per invocation.
 - Vitest with `@cloudflare/vitest-pool-workers` for real query/route integration tests.
 - AGPL-3.0-only licensing.
 
