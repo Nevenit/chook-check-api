@@ -141,7 +141,7 @@ describe("refreshProductStats", () => {
     });
   });
 
-  it("refreshes a dirty product at most every six hours", async () => {
+  it("refreshes a dirty product at most once a day", async () => {
     for (let i = 0; i < 5; i++) {
       await insertRow({
         contributor: `c${i}`,
@@ -157,10 +157,10 @@ describe("refreshProductStats", () => {
       new Date(NOW.getTime() + 60_000),
     );
     expect(
-      await refreshProductStats(env.DB, new Date(NOW.getTime() + HOUR)),
+      await refreshProductStats(env.DB, new Date(NOW.getTime() + 7 * HOUR)),
     ).toBe(0);
     expect(
-      await refreshProductStats(env.DB, new Date(NOW.getTime() + 7 * HOUR)),
+      await refreshProductStats(env.DB, new Date(NOW.getTime() + 25 * HOUR)),
     ).toBe(1);
     const dirty = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM dirty_products",
@@ -198,6 +198,22 @@ describe("refreshProductStats", () => {
     expect((await stats())?.public).toBe(0);
   });
 
+  it("rechecks only public products when nothing changed", async () => {
+    for (let i = 0; i < 4; i++) {
+      await insertRow({
+        contributor: `c${i}`,
+        price: 500,
+        observedAt: at(HOUR),
+      });
+    }
+    await markProductsDirty(env.DB, ["coles:1"], NOW);
+    await refreshProductStats(env.DB, NOW);
+    expect((await stats())?.public).toBe(0);
+    expect(
+      await refreshProductStats(env.DB, new Date(NOW.getTime() + 2 * DAY)),
+    ).toBe(0);
+  });
+
   it("drops a product below quorum after a contributor deletes their data", async () => {
     for (let i = 0; i < 5; i++) {
       await env.DB.prepare(
@@ -215,7 +231,7 @@ describe("refreshProductStats", () => {
     await refreshProductStats(env.DB, NOW);
     expect((await stats())?.public).toBe(1);
     await deleteContributorV2(env.DB, "c0");
-    await refreshProductStats(env.DB, new Date(Date.now() + 7 * HOUR));
+    await refreshProductStats(env.DB, new Date(Date.now() + 25 * HOUR));
     expect((await stats())?.public).toBe(0);
   });
 

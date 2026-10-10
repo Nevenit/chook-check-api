@@ -7,7 +7,8 @@ import { makeV2Observation, postV2, registerContributor } from "./v2-helpers";
 
 beforeEach(cleanDb);
 
-const SEVEN_HOURS = 7 * 60 * 60 * 1000;
+// Stats refresh at most once a day per product.
+const NEXT_DAY = 25 * 60 * 60 * 1000;
 
 async function seedHistoryContributors(
   count: number,
@@ -45,7 +46,7 @@ describe("v2 product aggregates and snapshots", () => {
     expect(response.status).toBe(404);
 
     await seedHistoryContributors(1, "woolworths:123");
-    await publish(SEVEN_HOURS);
+    await publish(NEXT_DAY);
     response = await SELF.fetch(
       "http://localhost/api/v2/products/woolworths%3A123/stats",
       { headers: { "CF-Connecting-IP": "198.51.100.1" } },
@@ -90,7 +91,7 @@ describe("v2 product aggregates and snapshots", () => {
     );
 
     await seedHistoryContributors(1);
-    await publish(SEVEN_HOURS);
+    await publish(NEXT_DAY);
     response = await SELF.fetch("http://localhost/api/v2/snapshots/products", {
       headers: { "CF-Connecting-IP": "198.51.100.3" },
     });

@@ -1,5 +1,6 @@
 export const STATS_BATCH_SIZE = 100;
-export const DIRTY_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Once a day keeps a full refresh pass within Workers Free's 5M rows read/day.
+export const DIRTY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const STALE_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RAW_WINDOW_DAYS = 180;
 const CURRENT_WINDOW_DAYS = 90;
@@ -36,11 +37,12 @@ async function selectProducts(db: D1Database, now: Date): Promise<string[]> {
     .all<{ product_id: string }>();
   const ids = new Set(dirty.map((row) => row.product_id));
   if (ids.size < STATS_BATCH_SIZE) {
-    // Windows slide even without new data, so stale stats are recomputed daily.
+    // Windows slide even without new data, so public stats are recomputed daily.
+    // A non-public product can only become public through new (dirty) data.
     const { results: stale } = await db
       .prepare(
         `SELECT product_id FROM product_stats
-         WHERE refreshed_at <= ?1 ORDER BY refreshed_at LIMIT ?2`,
+         WHERE public = 1 AND refreshed_at <= ?1 ORDER BY refreshed_at LIMIT ?2`,
       )
       .bind(ago(now, STALE_REFRESH_INTERVAL_MS), STATS_BATCH_SIZE - ids.size)
       .all<{ product_id: string }>();
