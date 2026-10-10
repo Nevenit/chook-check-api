@@ -2,11 +2,11 @@
 
 Privacy-thresholded community price-data backend for the [Chook Check](https://github.com/Nevenit/Chook-Check) browser extension. It runs as a Cloudflare Worker with D1 storage.
 
-The API accepts authenticated pseudonymous observations from users who explicitly opt in, exposes only aggregated product data, and produces cautious signals for persistent matched price differences. It does not establish retailer intent or prove personalisation.
+The API accepts authenticated pseudonymous observations from users who explicitly opt in, and exposes only aggregated product data. Its analysis code for persistent matched price differences is tested but not yet published by any route; any such signal would be evidence for review, not proof of retailer intent or personalisation.
 
 ## Status
 
-API v2, authentication, strict schemas, rate limiting, raw-data expiry, long-term daily aggregates, snapshot caching, and integration tests are implemented. The repository should not be treated as production-ready until the target D1 migrations and required Worker secrets have been applied and the deployed extension/API pair has passed release QA.
+API v2, authentication, strict schemas, rate limiting, raw-data expiry, long-term daily aggregates, precomputed product stats and snapshots, and integration tests are implemented. The pipeline is designed for the Workers Free plan (see [the operating envelope](#workers-free-operating-envelope)). The repository should not be treated as production-ready until the target D1 migrations and required Worker secrets have been applied and the deployed extension/API pair has passed release QA.
 
 The unauthenticated v1 submission, product, trend, and UUID-only deletion routes are retired and return HTTP 410.
 
@@ -17,8 +17,8 @@ The unauthenticated v1 submission, product, trend, and UUID-only deletion routes
 | `POST`   | `/api/v2/contributors`              | Registration rate limit  | Issue a contributor ID plus separate submit/deletion tokens.                          |
 | `POST`   | `/api/v2/observations`              | `Bearer <submitToken>`   | Submit 1–50 version-2 observations in `history` or `fairness` mode.                   |
 | `DELETE` | `/api/v2/contributor`               | `Bearer <deletionToken>` | Delete raw observations associated with that contributor and disable its credentials. |
-| `GET`    | `/api/v2/products/:productId/stats` | Public read rate limit   | Get thresholded history and differential/observer-effect output.                      |
-| `GET`    | `/api/v2/snapshots/products`        | Public read rate limit   | Get one cacheable bulk product snapshot with `ETag`.                                  |
+| `GET`    | `/api/v2/products/:productId/stats` | Public read rate limit   | Get one public product's stats (the same fields as the snapshot).                     |
+| `GET`    | `/api/v2/snapshots/products`        | Public read rate limit   | Get the precomputed bulk product snapshot with a content-hash `ETag`.                 |
 | `GET`    | `/health`                           | None                     | Basic health response.                                                                |
 
 Request schemas are in `src/lib/schemas.ts`; response types are in `src/lib/types.ts`. The observation schema is strict, rejects unknown fields such as `pageUrl`, requires the product prefix to match the retailer, and limits client timestamps to the previous 14 days.
@@ -41,14 +41,15 @@ D1 stores SHA-256 token hashes, never the raw tokens. A contributor ID alone is 
 
 ## Public aggregation and interpretation
 
-- A product needs at least five distinct contributors before prices are public.
-- Samples are balanced to one observation per contributor/product/day.
-- Daily values use the median and include minimum/maximum values.
-- The current value comes from the latest represented day, not the entire lookback period.
+- Samples are balanced to one latest observation per contributor/product/day.
+- A product is public only when a recent day qualifies: the latest UTC day within the last 90 days with at least five distinct contributors. Its median, minimum, and maximum are the product's current price.
+- `observationCount` and `contributorCount` cover non-quarantined raw rows from the last 180 days; `promoFrequency` covers balanced samples from the same period, with no offer counted as `none`.
+- Published fields are exactly: `productId`, `productName`, `brand`, `storeChain`, `quorum` (always `true`), `currentMedianCents`, `minCents`, `maxCents`, `observationCount`, `contributorCount`, and `promoFrequency`. Price history and signals are not published.
+- Stats are precomputed. A product is queued when it receives an accepted observation or loses a contributor's data, and its stats are recomputed at most once a day; public products are also rechecked daily so ageing data leaves the snapshot. The snapshot is republished every 30 minutes when its content changes, and its `ETag` is a hash of that content.
 - Incoming extreme outliers are quarantined only after five comparable same-product/day/offer values exist; the bounds are below one-fifth or above five times that median.
 - Quarantined values are excluded from public results.
 
-A `possible_differential_pricing` result requires at least ten contributors in a fully matched cohort, at least three contributors in each of two or more price groups, and the same set of qualifying prices in two UTC hourly buckets, each with ten contributors. Each hourly cohort uses at most one latest sample per contributor. Unknown required context and legacy/2.0.0/2.1.0 collection versions cannot support an unexplained-pricing signal. Matching includes store/region, fulfilment, offer, required quantity, source surface, instrument/capture mode, sign-in state, and loyalty state. Known sign-in/loyalty groups with different medians are labelled `contextual_difference` rather than unexplained personalisation.
+The tested, unpublished analysis is as follows. A `possible_differential_pricing` result requires at least ten contributors in a fully matched cohort, at least three contributors in each of two or more price groups, and the same set of qualifying prices in two UTC hourly buckets, each with ten contributors. Each hourly cohort uses at most one latest sample per contributor. Unknown required context and legacy/2.0.0/2.1.0 collection versions cannot support an unexplained-pricing signal. Matching includes store/region, fulfilment, offer, required quantity, source surface, instrument/capture mode, sign-in state, and loyalty state. Known sign-in/loyalty groups with different medians are labelled `contextual_difference` rather than unexplained personalisation.
 
 Inline pre/post pairs are kept separate from silent observations. Observer-effect output requires five contributors with complete pairs, including unchanged prices. Pairs must have one pre/post capture each, matching product/context, and correctly ordered timestamps no more than ten seconds apart; old collection versions are excluded. Every signal is evidence for review, not causal proof.
 
@@ -113,12 +114,33 @@ Production deployment is triggered only by `v*` tags and requires the `CLOUDFLAR
 
 Never edit a migration already applied to a real environment. Add a new numbered migration for subsequent schema changes.
 
+## Workers Free operating envelope
+
+Workers Free allows 50 D1 queries per invocation, 10 ms of CPU per request or cron run, 5 million rows read and 100,000 rows written per day, and a 500 MB database. Every handler and job is tested to stay within 40 queries.
+
+Measured on 2026-10-10 against local `wrangler dev` with synthetic data: 30 contributors, about 40 observations each per day, 4,000 products, 190,000 raw rows in the 180-day window, and a 101 MB database.
+
+| Invocation                               | D1 queries | Rows read               | Rows written |
+| ---------------------------------------- | ---------- | ----------------------- | ------------ |
+| `GET /api/v2/snapshots/products` (200)   | 4          | 2                       | 2            |
+| The same with a matching `If-None-Match` | 3          | 3                       | 1            |
+| `GET /api/v2/products/:id/stats`         | 3          | 1                       | 2            |
+| `POST /api/v2/observations` (50 rows)    | 8          | 1,156                   | 353          |
+| Every-minute maintenance run             | 6–16       | 7–619,000 (mean 56,000) | 0–1,567      |
+| 30-minute snapshot publication           | 5          | 4,002                   | 3            |
+
+The served snapshot was 28 KB for 112 public products. Before this design, one snapshot request made 5,167 queries and read 546,000 rows at the same scale.
+
+Daily totals at that scale are estimated from these measurements. Rows read: about 1.6 million for stats refreshes, 0.2 million for snapshot publication, and well under 0.1 million for uploads and downloads. Rows written: about 7 per accepted observation, a comparable amount when it expires (not measured separately), and a few per refreshed product. Rows read is the binding limit and grows with the number of raw rows. The Free plan should therefore support about 80 contributors at that rate (roughly 3,000 accepted observations a day); the database size limit would be reached at about 940,000 raw rows. CPU time could not be measured locally; check the Worker's CPU metrics after deployment.
+
+Workers Paid raises these limits and allows a faster refresh interval.
+
 ## Architecture
 
 - [Hono](https://hono.dev) request routing.
 - [Zod](https://zod.dev) strict validation.
 - Cloudflare Workers and D1.
-- Hourly scheduled cleanup for rate-limit rows, raw observation materialization/expiry, and aggregate expiry.
+- Two cron triggers: every minute (rate-limit cleanup, one raw-retention step, one stats refresh batch of up to 100 products) and every 30 minutes (snapshot publication), each within the Free plan's 50 D1 queries per invocation.
 - Vitest with `@cloudflare/vitest-pool-workers` for real query/route integration tests.
 - AGPL-3.0-only licensing.
 
