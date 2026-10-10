@@ -41,9 +41,8 @@ D1 stores SHA-256 token hashes, never the raw tokens. A contributor ID alone is 
 
 ## Public aggregation and interpretation
 
-- Samples are balanced to one latest observation per contributor/product/day.
-- A product is public only when a recent day qualifies: the latest UTC day within the last 90 days with at least five distinct contributors. Its median, minimum, and maximum are the product's current price.
-- `observationCount` and `contributorCount` cover non-quarantined raw rows from the last 180 days; `promoFrequency` covers balanced samples from the same period, with no offer counted as `none`.
+- A product is public only when at least five distinct contributors observed it in the last seven days. Its current median, minimum, and maximum use each of those contributors' latest price, so a heavy browser counts once.
+- `observationCount` and `contributorCount` cover non-quarantined raw rows from the last 180 days; `promoFrequency` covers the same period with one latest sample per contributor/product/day, and no offer counted as `none`.
 - Published fields are exactly: `productId`, `productName`, `brand`, `storeChain`, `quorum` (always `true`), `currentMedianCents`, `minCents`, `maxCents`, `observationCount`, `contributorCount`, and `promoFrequency`. Price history and signals are not published.
 - Stats are precomputed. A product is queued when it receives an accepted observation, and its stats are recomputed at most once a day; public products are also rechecked daily so ageing data leaves the snapshot. When a contributor deletes their data, their products are recomputed on the next run, so their prices leave the published stats within about half an hour. The snapshot is republished every 30 minutes when its content changes, and its `ETag` is a hash of that content.
 - Incoming extreme outliers are quarantined only after five comparable same-product/day/offer values exist; the bounds are below one-fifth or above five times that median.
@@ -132,7 +131,7 @@ Measured on 2026-10-10 against local `wrangler dev` with synthetic data: 30 cont
 
 The served snapshot was 28 KB for 110 public products. Before this design, one snapshot request made 5,167 queries and read 546,000 rows at the same scale.
 
-A simulated day's refreshes (729 changed products and 110 public rechecks) read 1.35 million rows and wrote 2,193 over eight runs. Adding idle minutes, snapshot runs, and uploads gives about 1.45 million rows read per day, 29% of the Free allowance. Rows written come to about 8 per accepted observation, a comparable amount when it expires (not measured separately), and a few per refreshed product: about 22,000 a day. Rows read is the binding limit and grows with the raw rows behind each changed product. The Free plan should therefore support about 100 contributors at that rate (roughly 4,000 accepted observations a day); the database size limit would be reached at about 940,000 raw rows. CPU time could not be measured locally; check the Worker's CPU metrics after deployment.
+A simulated day's refreshes (729 changed products and 110 public rechecks) read 1.35 million rows and wrote 2,193 over eight runs. That run used an earlier 90-day current-price query; the seven-day window reads fewer rows, so these figures are an upper bound. Adding idle minutes, snapshot runs, and uploads gives about 1.45 million rows read per day, 29% of the Free allowance. Rows written come to about 8 per accepted observation, a comparable amount when it expires (not measured separately), and a few per refreshed product: about 22,000 a day. Rows read is the binding limit and grows with the raw rows behind each changed product. The Free plan should therefore support about 100 contributors at that rate (roughly 4,000 accepted observations a day); the database size limit would be reached at about 940,000 raw rows. CPU time could not be measured locally; check the Worker's CPU metrics after deployment.
 
 Workers Paid raises these limits and allows a faster refresh interval.
 

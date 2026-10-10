@@ -61,7 +61,7 @@ async function stats(productId = "coles:1") {
 }
 
 describe("refreshProductStats", () => {
-  it("publishes the latest day with at least five contributors", async () => {
+  it("publishes each contributor's latest price from the last seven days", async () => {
     for (const [i, price] of [500, 510, 520, 530, 540].entries()) {
       await insertRow({ contributor: `c${i}`, price, observedAt: at(2 * DAY) });
     }
@@ -83,9 +83,9 @@ describe("refreshProductStats", () => {
         brand: null,
         storeChain: "coles",
         quorum: true,
-        currentMedianCents: 520,
-        minCents: 500,
-        maxCents: 540,
+        currentMedianCents: 900,
+        minCents: 540,
+        maxCents: 900,
         observationCount: 9,
         contributorCount: 5,
         promoFrequency: { none: 1 },
@@ -111,12 +111,12 @@ describe("refreshProductStats", () => {
     });
   });
 
-  it("is not public when the only qualifying day is older than 90 days", async () => {
+  it("is not public when fewer than five contributors saw it in the last seven days", async () => {
     for (let i = 0; i < 5; i++) {
       await insertRow({
         contributor: `c${i}`,
         price: 500,
-        observedAt: at(100 * DAY),
+        observedAt: at(8 * DAY),
       });
     }
     await markProductsDirty(env.DB, ["coles:1"], NOW);
@@ -183,12 +183,12 @@ describe("refreshProductStats", () => {
     expect(dirty?.n).toBe(1);
   });
 
-  it("refreshes stale stats daily so old current days expire", async () => {
+  it("refreshes stale stats daily so old prices expire", async () => {
     for (let i = 0; i < 5; i++) {
       await insertRow({
         contributor: `c${i}`,
         price: 500,
-        observedAt: at(89 * DAY),
+        observedAt: at(6 * DAY),
       });
     }
     await markProductsDirty(env.DB, ["coles:1"], NOW);
