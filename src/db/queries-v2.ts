@@ -13,6 +13,9 @@ export interface ObservationV2Row {
   regular_price_cents: number | null;
   offer_type: string | null;
   offer_id: string | null;
+  offer_text_normalized: string | null;
+  extraction_source: string;
+  scraper_version: string;
   required_quantity: number | null;
   source_surface: string;
   instrument_mode: string;
@@ -156,6 +159,7 @@ export async function getProductRowsV2(
     .prepare(
       `SELECT contributor_id, product_id, product_name, brand, store_chain,
               current_price_cents, regular_price_cents, offer_type, offer_id,
+              offer_text_normalized, extraction_source, scraper_version,
               required_quantity, source_surface, instrument_mode, capture_phase,
               comparison_id, store_id, coarse_region, fulfilment_mode, auth_state,
               loyalty_state, client_observed_at, contribution_mode

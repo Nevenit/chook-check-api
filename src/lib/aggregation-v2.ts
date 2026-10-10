@@ -21,6 +21,7 @@ function onePerContributorPerDay(rows: ObservationV2Row[]): ObservationV2Row[] {
 function contextKey(
   row: ObservationV2Row,
   includeAuthAndLoyalty: boolean,
+  includePhase = true,
 ): string {
   const fields = [
     row.store_id ?? "",
@@ -28,15 +29,18 @@ function contextKey(
     row.fulfilment_mode,
     row.offer_type ?? "",
     row.offer_id ?? "",
+    row.offer_text_normalized ?? "",
     row.required_quantity ?? "",
     row.source_surface,
     row.instrument_mode,
-    row.capture_phase,
+    includePhase ? row.capture_phase : "",
+    row.extraction_source,
+    row.scraper_version,
   ];
   if (includeAuthAndLoyalty) {
     fields.push(row.auth_state, row.loyalty_state);
   }
-  return fields.join("|");
+  return JSON.stringify(fields);
 }
 
 function groupContributorsByPrice(rows: ObservationV2Row[]) {
@@ -61,7 +65,11 @@ export function analyseDifferentialPricing(
   const fairnessRows = rows.filter(
     (row) =>
       row.contribution_mode === "fairness" &&
-      Boolean(row.store_id || row.coarse_region),
+      Boolean(row.store_id || row.coarse_region) &&
+      row.fulfilment_mode !== "unknown" &&
+      row.source_surface !== "unknown" &&
+      row.extraction_source !== "unknown" &&
+      !["legacy", "unknown", "2.0.0", "2.1.0"].includes(row.scraper_version),
   );
   const byBaseContext = new Map<string, ObservationV2Row[]>();
   for (const row of fairnessRows) {
@@ -110,6 +118,8 @@ export function analyseDifferentialPricing(
     } else {
       const fullyMatched = new Map<string, ObservationV2Row[]>();
       for (const row of contextRows) {
+        if (row.auth_state === "unknown" || row.loyalty_state === "unknown")
+          continue;
         const key = contextKey(row, true);
         fullyMatched.set(key, [...(fullyMatched.get(key) ?? []), row]);
       }
@@ -135,13 +145,31 @@ export function analyseDifferentialPricing(
           const hour = row.client_observed_at.slice(0, 13);
           byHour.set(hour, [...(byHour.get(hour) ?? []), row]);
         }
-        const repeatedBuckets = [...byHour.values()].filter(
-          (bucket) =>
-            groupContributorsByPrice(bucket).filter(
-              (group) => group.contributorCount >= PRICE_GROUP_CONTRIBUTORS,
-            ).length >= 2,
-        ).length;
-        if (repeatedBuckets >= 2) {
+        const patterns = new Map<string, number>();
+        for (const bucket of byHour.values()) {
+          // One contributor cannot populate multiple price groups in a window.
+          const latestByContributor = new Map<string, ObservationV2Row>();
+          for (const row of bucket) {
+            const previous = latestByContributor.get(row.contributor_id);
+            if (
+              !previous ||
+              previous.client_observed_at < row.client_observed_at
+            )
+              latestByContributor.set(row.contributor_id, row);
+          }
+          if (latestByContributor.size < SIGNAL_CONTRIBUTORS) continue;
+          const groups = groupContributorsByPrice([
+            ...latestByContributor.values(),
+          ]).filter(
+            (group) => group.contributorCount >= PRICE_GROUP_CONTRIBUTORS,
+          );
+          if (groups.length < 2) continue;
+          const pattern = JSON.stringify(
+            groups.map((group) => group.priceCents),
+          );
+          patterns.set(pattern, (patterns.get(pattern) ?? 0) + 1);
+        }
+        if ([...patterns.values()].some((count) => count >= 2)) {
           candidate = {
             classification: "possible_differential_pricing",
             confidence: "moderate",
@@ -179,20 +207,58 @@ export function analyseObserverEffect(
 ): ObserverEffect {
   const pairs = new Map<
     string,
-    { contributor: string; pre?: number; post?: number }
+    {
+      contributor: string;
+      pre?: ObservationV2Row;
+      post?: ObservationV2Row;
+      ambiguous?: boolean;
+    }
   >();
   for (const row of rows) {
-    if (!row.comparison_id) continue;
+    if (
+      !row.comparison_id ||
+      row.contribution_mode !== "fairness" ||
+      row.instrument_mode !== "user_activated_inline" ||
+      ["legacy", "unknown", "2.0.0", "2.1.0"].includes(row.scraper_version) ||
+      row.extraction_source === "unknown" ||
+      row.source_surface === "unknown"
+    )
+      continue;
     const key = `${row.contributor_id}:${row.comparison_id}`;
     const pair = pairs.get(key) ?? { contributor: row.contributor_id };
-    if (row.capture_phase === "pre_ui") pair.pre = row.current_price_cents;
-    if (row.capture_phase === "post_ui") pair.post = row.current_price_cents;
+    if (row.capture_phase === "pre_ui") {
+      if (pair.pre) pair.ambiguous = true;
+      pair.pre = row;
+    }
+    if (row.capture_phase === "post_ui") {
+      if (pair.post) pair.ambiguous = true;
+      pair.post = row;
+    }
     pairs.set(key, pair);
   }
-  const complete = [...pairs.values()].filter(
-    (pair): pair is { contributor: string; pre: number; post: number } =>
-      pair.pre !== undefined && pair.post !== undefined,
-  );
+  const complete = [...pairs.values()].flatMap((pair) => {
+    if (
+      pair.ambiguous ||
+      !pair.pre ||
+      !pair.post ||
+      pair.pre.product_id !== pair.post.product_id ||
+      contextKey(pair.pre, true, false) !== contextKey(pair.post, true, false)
+    )
+      return [];
+    const elapsed =
+      Date.parse(pair.post.client_observed_at) -
+      Date.parse(pair.pre.client_observed_at);
+    // The extension samples at one second. Allow timer jitter, but never match
+    // a stale price from another browsing session into the same comparison.
+    if (elapsed < 0 || elapsed > 10_000) return [];
+    return [
+      {
+        contributor: pair.contributor,
+        pre: pair.pre.current_price_cents,
+        post: pair.post.current_price_cents,
+      },
+    ];
+  });
   const contributors = new Set(complete.map((pair) => pair.contributor));
   if (contributors.size < PUBLIC_QUORUM) {
     return {
