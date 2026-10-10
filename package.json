@@ -21,8 +21,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "node scripts/run-tests.mjs run",
+    "test:watch": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.4",
@@ -40,5 +40,8 @@
     "typescript-eslint": "^8.0.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.112.0"
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

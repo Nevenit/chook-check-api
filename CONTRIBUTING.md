@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node 20+
+- Node 24 (see `.nvmrc`)
 - npm
 - A Cloudflare account (only needed for deployment, not for local dev or tests)
 
@@ -11,7 +11,7 @@
 ```bash
 git clone https://github.com/Nevenit/chook-check-api.git
 cd chook-check-api
-npm install
+npm ci --include=dev
 ```
 
 ## Local development
@@ -23,6 +23,8 @@ npm run dev
 This starts `wrangler dev` against a local miniflare D1 instance — no Cloudflare account required.
 
 ## Testing
+
+Use Node 24 (`nvm use` reads `.nvmrc`) and install locked dependencies with `npm ci --include=dev`. The test scripts set `NODE_ENV=test` even when the invoking shell uses production mode.
 
 ```bash
 npm test                 # one-shot
