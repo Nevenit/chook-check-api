@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { App, Bindings } from "./lib/types";
-import { cleanupRateLimits, cleanupRawObservations } from "./cron";
+import { cleanupRateLimits, runRetentionStep } from "./cron";
+import { refreshProductStats } from "./lib/product-stats";
+import { buildSnapshot, SNAPSHOT_CRON } from "./lib/snapshot";
 import { v2Contributors } from "./routes/v2-contributors";
 import { v2Observations } from "./routes/v2-observations";
 import { v2Contributor } from "./routes/v2-contributor";
@@ -94,10 +96,14 @@ app.route("/api/v2/snapshots", v2Snapshots);
 
 export default {
   fetch: app.fetch,
-  scheduled: async (_controller, env) => {
-    await Promise.all([
-      cleanupRateLimits(env.DB),
-      cleanupRawObservations(env.DB),
-    ]);
+  scheduled: async (controller, env) => {
+    // Separate invocations keep each job within Workers Free CPU and query limits.
+    if (controller.cron === SNAPSHOT_CRON) {
+      await buildSnapshot(env.DB);
+      return;
+    }
+    await cleanupRateLimits(env.DB);
+    await runRetentionStep(env.DB);
+    await refreshProductStats(env.DB);
   },
 } satisfies ExportedHandler<Bindings>;

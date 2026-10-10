@@ -24,76 +24,89 @@ export async function cleanupRateLimits(db: D1Database): Promise<number> {
 
 const RAW_RETENTION_DAYS = 180;
 const AGGREGATE_RETENTION_DAYS = 3 * 365;
-const MATERIALIZATION_BATCH_DAYS = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const RETENTION_CHUNK_SIZE = 1000;
+export const RETENTION_MAX_CHUNKS = 5;
 
-interface ExpiredProductDay {
-  product_id: string;
-  observation_date: string;
-}
+const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
-interface MaterializationRow {
-  contributor_id: string;
-  product_name: string;
-  brand: string | null;
-  store_chain: string;
-  current_price_cents: number;
-  client_observed_at: string;
-}
+/**
+ * Expire raw observations one UTC day at a time. Days with at least five
+ * contributors are aggregated once before any of their rows are deleted.
+ */
+export async function runRetentionStep(
+  db: D1Database,
+  now = new Date(),
+  {
+    chunkSize = RETENTION_CHUNK_SIZE,
+    maxChunks = RETENTION_MAX_CHUNKS,
+  }: { chunkSize?: number; maxChunks?: number } = {},
+): Promise<number> {
+  const rawCutoff = isoDate(now.getTime() - RAW_RETENTION_DAYS * DAY_MS);
+  const aggregateCutoff = isoDate(
+    now.getTime() - AGGREGATE_RETENTION_DAYS * DAY_MS,
+  );
+  await db
+    .prepare(`DELETE FROM daily_product_aggregates WHERE observation_date < ?1`)
+    .bind(aggregateCutoff)
+    .run();
 
-export async function cleanupRawObservations(db: D1Database): Promise<number> {
-  const cutoff = new Date(
-    Date.now() - RAW_RETENTION_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  const aggregateCutoff = new Date(
-    Date.now() - AGGREGATE_RETENTION_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString();
-  const { results: expiredDays } = await db
+  const oldest = await db
+    .prepare(`SELECT MIN(client_observed_at) AS oldest FROM observations_v2`)
+    .first<{ oldest: string | null }>();
+  const day = oldest?.oldest?.slice(0, 10);
+  // Progress for days with no rows left (e.g. the last chunk was exactly full).
+  await db
+    .prepare(`DELETE FROM retention_progress WHERE observation_date < ?1`)
+    .bind(day ?? rawCutoff)
+    .run();
+  if (!day || day >= rawCutoff) return 0;
+  const nextDay = isoDate(Date.parse(`${day}T00:00:00Z`) + DAY_MS);
+
+  const progress = await db
     .prepare(
-      `SELECT product_id, substr(client_observed_at, 1, 10) AS observation_date
-       FROM observations_v2
-       WHERE substr(client_observed_at, 1, 10) < substr(?, 1, 10)
-       GROUP BY product_id, observation_date
-       ORDER BY observation_date ASC, product_id ASC
-       LIMIT ?`,
+      `SELECT 1 AS done FROM retention_progress WHERE observation_date = ?1`,
     )
-    .bind(cutoff, MATERIALIZATION_BATCH_DAYS)
-    .all<ExpiredProductDay>();
-
-  let deleted = 0;
-  for (const day of expiredDays ?? []) {
-    const { results } = await db
-      .prepare(
-        `SELECT contributor_id, product_name, brand, store_chain,
-                current_price_cents, client_observed_at
-         FROM observations_v2
-         WHERE product_id = ?
-           AND substr(client_observed_at, 1, 10) = ?
-           AND quarantined = 0
-         ORDER BY client_observed_at ASC`,
-      )
-      .bind(day.product_id, day.observation_date)
-      .all<MaterializationRow>();
-
-    const latestByContributor = new Map<string, MaterializationRow>();
-    for (const row of results ?? []) {
-      latestByContributor.set(row.contributor_id, row);
-    }
-    const balanced = [...latestByContributor.values()];
-
-    if (
-      day.observation_date >= aggregateCutoff.slice(0, 10) &&
-      balanced.length >= 5
-    ) {
-      const latest = balanced.at(-1)!;
-      const prices = balanced.map((row) => row.current_price_cents);
+    .bind(day)
+    .first();
+  if (!progress) {
+    if (day >= aggregateCutoff) {
       await db
         .prepare(
-          `INSERT INTO daily_product_aggregates (
+          `WITH latest AS (
+             SELECT product_id, product_name, brand, store_chain,
+                    current_price_cents, client_observed_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY product_id, contributor_id
+                      ORDER BY client_observed_at DESC
+                    ) AS rn
+             FROM observations_v2
+             WHERE client_observed_at >= ?1 AND client_observed_at < ?2
+               AND quarantined = 0
+           ),
+           ranked AS (
+             SELECT *,
+                    ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY current_price_cents) AS pos,
+                    COUNT(*) OVER (PARTITION BY product_id) AS n,
+                    ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY client_observed_at DESC) AS recency
+             FROM latest WHERE rn = 1
+           )
+           INSERT INTO daily_product_aggregates (
              product_id, observation_date, product_name, brand, store_chain,
              median_price_cents, min_price_cents, max_price_cents,
              observation_count, contributor_count, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(product_id, observation_date) DO UPDATE SET
+           )
+           SELECT product_id, ?1,
+                  MAX(CASE WHEN recency = 1 THEN product_name END),
+                  MAX(CASE WHEN recency = 1 THEN brand END),
+                  MAX(CASE WHEN recency = 1 THEN store_chain END),
+                  AVG(CASE WHEN pos IN ((n + 1) / 2, (n + 2) / 2) THEN current_price_cents END),
+                  MIN(current_price_cents), MAX(current_price_cents),
+                  COUNT(*), COUNT(*), ?3
+           FROM ranked WHERE true
+           GROUP BY product_id
+           HAVING COUNT(*) >= 5
+           ON CONFLICT (product_id, observation_date) DO UPDATE SET
              product_name = excluded.product_name,
              brand = excluded.brand,
              store_chain = excluded.store_chain,
@@ -104,39 +117,37 @@ export async function cleanupRawObservations(db: D1Database): Promise<number> {
              contributor_count = excluded.contributor_count,
              created_at = excluded.created_at`,
         )
-        .bind(
-          day.product_id,
-          day.observation_date,
-          latest.product_name,
-          latest.brand,
-          latest.store_chain,
-          median(prices),
-          Math.min(...prices),
-          Math.max(...prices),
-          balanced.length,
-          balanced.length,
-          new Date().toISOString(),
-        )
+        .bind(day, nextDay, now.toISOString())
         .run();
     }
-
-    const deleteResult = await db
+    await db
       .prepare(
-        `DELETE FROM observations_v2
-         WHERE product_id = ? AND substr(client_observed_at, 1, 10) = ?`,
+        `INSERT INTO retention_progress (observation_date, materialized_at) VALUES (?1, ?2)`,
       )
-      .bind(day.product_id, day.observation_date)
+      .bind(day, now.toISOString())
       .run();
-    deleted += deleteResult.meta?.changes ?? 0;
   }
 
-  await db
-    .prepare(
-      `DELETE FROM daily_product_aggregates
-       WHERE observation_date < substr(?, 1, 10)`,
-    )
-    .bind(aggregateCutoff)
-    .run();
+  let deleted = 0;
+  for (let chunk = 0; chunk < maxChunks; chunk++) {
+    const result = await db
+      .prepare(
+        `DELETE FROM observations_v2 WHERE id IN (
+           SELECT id FROM observations_v2
+           WHERE client_observed_at >= ?1 AND client_observed_at < ?2
+           LIMIT ?3)`,
+      )
+      .bind(day, nextDay, chunkSize)
+      .run();
+    const changes = result.meta.changes ?? 0;
+    deleted += changes;
+    if (changes < chunkSize) {
+      await db
+        .prepare(`DELETE FROM retention_progress WHERE observation_date = ?1`)
+        .bind(day)
+        .run();
+      break;
+    }
+  }
   return deleted;
 }
-import { median } from "./lib/aggregation";
