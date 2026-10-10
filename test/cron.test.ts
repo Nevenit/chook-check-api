@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { env, SELF } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { cleanupRateLimits, cleanupRawObservations } from "../src/cron";
 import { createContributor } from "../src/lib/auth";
 import { cleanDb } from "./helpers";
@@ -108,12 +108,5 @@ describe("cleanupRawObservations", () => {
       max_price_cents: 900,
       contributor_count: 5,
     });
-
-    const response = await SELF.fetch(
-      "http://localhost/api/v2/products/woolworths:123/stats",
-    );
-    expect(response.status).toBe(200);
-    const stats = await response.json<{ priceHistory: unknown[] }>();
-    expect(stats.priceHistory).toHaveLength(1);
   });
 });

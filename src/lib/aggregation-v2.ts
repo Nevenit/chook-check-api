@@ -1,22 +1,10 @@
-import { median, promoFrequency } from "./aggregation";
-import type { DifferentialSignal, ObserverEffect, ProductStats } from "./types";
-import type {
-  DailyProductAggregateRow,
-  ObservationV2Row,
-} from "../db/queries-v2";
+import { median } from "./aggregation";
+import type { DifferentialSignal, ObserverEffect } from "./types";
+import type { ObservationV2Row } from "../db/queries-v2";
 
 const PUBLIC_QUORUM = 5;
 const SIGNAL_CONTRIBUTORS = 10;
 const PRICE_GROUP_CONTRIBUTORS = 3;
-
-function onePerContributorPerDay(rows: ObservationV2Row[]): ObservationV2Row[] {
-  const latest = new Map<string, ObservationV2Row>();
-  for (const row of rows) {
-    const key = `${row.contributor_id}:${row.client_observed_at.slice(0, 10)}`;
-    latest.set(key, row);
-  }
-  return [...latest.values()];
-}
 
 function contextKey(
   row: ObservationV2Row,
@@ -274,108 +262,5 @@ export function analyseObserverEffect(
     contributorCount: contributors.size,
     changedCount: changes.filter((change) => change !== 0).length,
     medianChangeCents: median(changes),
-  };
-}
-
-export function aggregateProductV2(
-  productId: string,
-  rows: ObservationV2Row[],
-  historical: DailyProductAggregateRow[] = [],
-): ProductStats | null {
-  if (rows.length === 0) {
-    const latest = historical.at(-1);
-    if (!latest) return null;
-    return {
-      productId,
-      productName: latest.product_name,
-      brand: latest.brand,
-      storeChain: latest.store_chain,
-      quorum: true,
-      currentMedianCents: latest.median_price_cents,
-      minCents: latest.min_price_cents,
-      maxCents: latest.max_price_cents,
-      observationCount: historical.reduce(
-        (sum, day) => sum + day.observation_count,
-        0,
-      ),
-      contributorCount: latest.contributor_count,
-      priceHistory: historical.map((day) => ({
-        date: day.observation_date,
-        medianCents: day.median_price_cents,
-        minCents: day.min_price_cents,
-        maxCents: day.max_price_cents,
-      })),
-      promoFrequency: {},
-    };
-  }
-  const contributors = new Set(rows.map((row) => row.contributor_id));
-  const quorum = contributors.size >= PUBLIC_QUORUM;
-  const latest = rows.at(-1)!;
-  if (!quorum) {
-    return {
-      productId,
-      productName: latest.product_name,
-      brand: latest.brand,
-      storeChain: latest.store_chain,
-      quorum: false,
-      currentMedianCents: null,
-      minCents: null,
-      maxCents: null,
-      observationCount: rows.length,
-      contributorCount: contributors.size,
-      priceHistory: [],
-      promoFrequency: {},
-    };
-  }
-
-  const balanced = onePerContributorPerDay(rows);
-  const latestDay = latest.client_observed_at.slice(0, 10);
-  const currentRows = balanced.filter(
-    (row) => row.client_observed_at.slice(0, 10) === latestDay,
-  );
-  const byDay = new Map<string, number[]>();
-  for (const row of balanced) {
-    const day = row.client_observed_at.slice(0, 10);
-    byDay.set(day, [...(byDay.get(day) ?? []), row.current_price_cents]);
-  }
-  const currentPrices = currentRows.map((row) => row.current_price_cents);
-  const priceHistory = new Map(
-    historical.map((day) => [
-      day.observation_date,
-      {
-        date: day.observation_date,
-        medianCents: day.median_price_cents,
-        minCents: day.min_price_cents,
-        maxCents: day.max_price_cents,
-      },
-    ]),
-  );
-  for (const [date, prices] of byDay) {
-    priceHistory.set(date, {
-      date,
-      medianCents: median(prices),
-      minCents: Math.min(...prices),
-      maxCents: Math.max(...prices),
-    });
-  }
-  return {
-    productId,
-    productName: latest.product_name,
-    brand: latest.brand,
-    storeChain: latest.store_chain,
-    quorum: true,
-    currentMedianCents: currentPrices.length ? median(currentPrices) : null,
-    minCents: currentPrices.length ? Math.min(...currentPrices) : null,
-    maxCents: currentPrices.length ? Math.max(...currentPrices) : null,
-    observationCount:
-      rows.length +
-      historical.reduce((sum, day) => sum + day.observation_count, 0),
-    contributorCount: contributors.size,
-    priceHistory: [...priceHistory.values()].sort((a, b) =>
-      a.date.localeCompare(b.date),
-    ),
-    promoFrequency: promoFrequency(balanced.map((row) => row.offer_type)),
-    differentialSignal: analyseDifferentialPricing(rows),
-    observerEffect: analyseObserverEffect(rows),
   };
 }

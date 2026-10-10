@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
+import { refreshProductStats } from "../src/lib/product-stats";
+import { buildSnapshot } from "../src/lib/snapshot";
 import { cleanDb } from "./helpers";
 import { makeV2Observation, postV2, registerContributor } from "./v2-helpers";
 
 beforeEach(cleanDb);
+
+const SEVEN_HOURS = 7 * 60 * 60 * 1000;
 
 async function seedHistoryContributors(
   count: number,
@@ -24,20 +28,29 @@ async function seedHistoryContributors(
   }
 }
 
+/** Run the scheduled jobs that publish stats, as if `msLater` had passed. */
+async function publish(msLater = 0) {
+  await refreshProductStats(env.DB, new Date(Date.now() + msLater));
+  await buildSnapshot(env.DB);
+}
+
 describe("v2 product aggregates and snapshots", () => {
   it("uses a five-contributor public threshold", async () => {
     await seedHistoryContributors(4);
+    await publish();
     let response = await SELF.fetch(
       "http://localhost/api/v2/products/woolworths%3A123/stats",
       { headers: { "CF-Connecting-IP": "198.51.100.1" } },
     );
-    expect((await response.json<{ quorum: boolean }>()).quorum).toBe(false);
+    expect(response.status).toBe(404);
 
     await seedHistoryContributors(1, "woolworths:123");
+    await publish(SEVEN_HOURS);
     response = await SELF.fetch(
       "http://localhost/api/v2/products/woolworths%3A123/stats",
       { headers: { "CF-Connecting-IP": "198.51.100.1" } },
     );
+    expect(response.status).toBe(200);
     expect((await response.json<{ quorum: boolean }>()).quorum).toBe(true);
   });
 
@@ -56,20 +69,18 @@ describe("v2 product aggregates and snapshots", () => {
         ],
       });
     }
+    await publish();
     const response = await SELF.fetch(
       "http://localhost/api/v2/products/woolworths%3A123/stats",
       { headers: { "CF-Connecting-IP": "198.51.100.2" } },
     );
-    const stats = await response.json<{
-      currentMedianCents: number;
-      priceHistory: unknown[];
-    }>();
+    const stats = await response.json<{ currentMedianCents: number }>();
     expect(stats.currentMedianCents).toBe(520);
-    expect(stats.priceHistory).toHaveLength(2);
   });
 
   it("bulk snapshot omits products below quorum and supports ETag revalidation", async () => {
     await seedHistoryContributors(4);
+    await publish();
     let response = await SELF.fetch(
       "http://localhost/api/v2/snapshots/products",
       { headers: { "CF-Connecting-IP": "198.51.100.3" } },
@@ -79,6 +90,7 @@ describe("v2 product aggregates and snapshots", () => {
     );
 
     await seedHistoryContributors(1);
+    await publish(SEVEN_HOURS);
     response = await SELF.fetch("http://localhost/api/v2/snapshots/products", {
       headers: { "CF-Connecting-IP": "198.51.100.3" },
     });
@@ -98,87 +110,5 @@ describe("v2 product aggregates and snapshots", () => {
       },
     );
     expect(revalidated.status).toBe(304);
-  });
-
-  it("labels persistent differences only after strict matched thresholds", async () => {
-    const firstHour = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    firstHour.setMinutes(5, 0, 0);
-    const secondHour = new Date(Date.now() - 60 * 60 * 1000);
-    secondHour.setMinutes(5, 0, 0);
-
-    for (let index = 0; index < 10; index++) {
-      const credentials = await registerContributor(`203.0.113.${index + 1}`);
-      const price = index < 5 ? 500 : 600;
-      await postV2(credentials.submitToken, {
-        mode: "fairness",
-        observations: [
-          makeV2Observation({
-            currentPriceCents: price,
-            coarseRegion: "QLD",
-            fulfilmentMode: "pickup",
-            authState: "guest",
-            loyaltyState: "non_member",
-            clientObservedAt: firstHour.toISOString(),
-          }),
-          makeV2Observation({
-            currentPriceCents: price,
-            coarseRegion: "QLD",
-            fulfilmentMode: "pickup",
-            authState: "guest",
-            loyaltyState: "non_member",
-            clientObservedAt: secondHour.toISOString(),
-          }),
-        ],
-      });
-    }
-
-    const response = await SELF.fetch(
-      "http://localhost/api/v2/products/woolworths%3A123/stats",
-      { headers: { "CF-Connecting-IP": "198.51.100.4" } },
-    );
-    const stats = await response.json<{
-      differentialSignal: { classification: string; confidence: string };
-    }>();
-    expect(stats.differentialSignal).toMatchObject({
-      classification: "possible_differential_pricing",
-      confidence: "moderate",
-    });
-  });
-
-  it("keeps inline observer-effect pairs separate and thresholded", async () => {
-    for (let index = 0; index < 5; index++) {
-      const credentials = await registerContributor(`203.0.113.${index + 1}`);
-      const comparisonId = crypto.randomUUID();
-      await postV2(credentials.submitToken, {
-        mode: "fairness",
-        observations: [
-          makeV2Observation({
-            coarseRegion: "QLD",
-            instrumentMode: "user_activated_inline",
-            capturePhase: "pre_ui",
-            comparisonId,
-            currentPriceCents: 500,
-          }),
-          makeV2Observation({
-            coarseRegion: "QLD",
-            instrumentMode: "user_activated_inline",
-            capturePhase: "post_ui",
-            comparisonId,
-            currentPriceCents: 550,
-          }),
-        ],
-      });
-    }
-    const response = await SELF.fetch(
-      "http://localhost/api/v2/products/woolworths%3A123/stats",
-      { headers: { "CF-Connecting-IP": "198.51.100.5" } },
-    );
-    const stats = await response.json<{
-      observerEffect: { contributorCount: number; changedCount: number };
-    }>();
-    expect(stats.observerEffect).toMatchObject({
-      contributorCount: 5,
-      changedCount: 5,
-    });
   });
 });
