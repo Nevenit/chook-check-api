@@ -48,9 +48,9 @@ D1 stores SHA-256 token hashes, never the raw tokens. A contributor ID alone is 
 - Incoming extreme outliers are quarantined only after five comparable same-product/day/offer values exist; the bounds are below one-fifth or above five times that median.
 - Quarantined values are excluded from public results.
 
-A `possible_differential_pricing` result requires at least ten contributors in a fully matched cohort, at least three contributors in each of two or more price groups, and the same pattern in two hourly buckets. Matching includes store/region, fulfilment, offer, required quantity, source surface, instrument/capture mode, sign-in state, and loyalty state. Known sign-in/loyalty groups with different medians are labelled `contextual_difference` rather than unexplained personalisation.
+A `possible_differential_pricing` result requires at least ten contributors in a fully matched cohort, at least three contributors in each of two or more price groups, and the same set of qualifying prices in two UTC hourly buckets, each with ten contributors. Each hourly cohort uses at most one latest sample per contributor. Unknown required context and legacy/2.0.0/2.1.0 collection versions cannot support an unexplained-pricing signal. Matching includes store/region, fulfilment, offer, required quantity, source surface, instrument/capture mode, sign-in state, and loyalty state. Known sign-in/loyalty groups with different medians are labelled `contextual_difference` rather than unexplained personalisation.
 
-Inline pre/post pairs are kept separate from silent observations. Observer-effect output requires five contributors with complete pairs. Every signal is evidence for review, not causal proof.
+Inline pre/post pairs are kept separate from silent observations. Observer-effect output requires five contributors with complete pairs, including unchanged prices. Pairs must have one pre/post capture each, matching product/context, and correctly ordered timestamps no more than ten seconds apart; old collection versions are excluded. Every signal is evidence for review, not causal proof.
 
 The extension repository contains the detailed [measurement methodology](https://github.com/Nevenit/Chook-Check/blob/main/docs/METHODOLOGY.md) and [threat model](https://github.com/Nevenit/Chook-Check/blob/main/docs/THREAT_MODEL.md).
 

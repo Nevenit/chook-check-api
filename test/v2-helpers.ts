@@ -39,7 +39,7 @@ export function makeV2Observation(overrides: Record<string, unknown> = {}) {
     requiredQuantity: null,
     sourceSurface: "product_page",
     extractionSource: "json_ld",
-    scraperVersion: "2.1.0",
+    scraperVersion: "2.2.0",
     instrumentMode: "silent",
     capturePhase: "baseline",
     comparisonId: null,
