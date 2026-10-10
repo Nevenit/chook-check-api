@@ -55,7 +55,7 @@ describe("v2 product aggregates and snapshots", () => {
     expect((await response.json<{ quorum: boolean }>()).quorum).toBe(true);
   });
 
-  it("publishes the latest day median rather than a multi-day median", async () => {
+  it("publishes each contributor's latest price, not a multi-day median", async () => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     for (let index = 0; index < 5; index++) {
       const credentials = await registerContributor(`203.0.113.${index + 1}`);

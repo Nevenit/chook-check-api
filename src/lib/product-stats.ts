@@ -1,7 +1,8 @@
 export const STATS_BATCH_SIZE = 100;
 export const STALE_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RAW_WINDOW_DAYS = 180;
-const CURRENT_WINDOW_DAYS = 90;
+// The current price uses each contributor's latest sample from this window.
+const CURRENT_WINDOW_DAYS = 7;
 const PUBLIC_QUORUM = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -91,36 +92,27 @@ export async function refreshProductStats(
     }>();
   const current = db
     .prepare(
-      `WITH balanced AS (
-         SELECT product_id, substr(client_observed_at, 1, 10) AS day,
-                current_price_cents,
+      `WITH latest AS (
+         SELECT product_id, current_price_cents,
                 ROW_NUMBER() OVER (
-                  PARTITION BY product_id, contributor_id, substr(client_observed_at, 1, 10)
+                  PARTITION BY product_id, contributor_id
                   ORDER BY client_observed_at DESC
                 ) AS rn
          FROM observations_v2
          WHERE product_id IN (SELECT value FROM json_each(?1))
            AND client_observed_at >= ?2 AND quarantined = 0
        ),
-       latest AS (SELECT product_id, day, current_price_cents FROM balanced WHERE rn = 1),
-       qualifying AS (
-         SELECT product_id, MAX(day) AS day FROM (
-           SELECT product_id, day FROM latest
-           GROUP BY product_id, day HAVING COUNT(*) >= ?3
-         ) GROUP BY product_id
-       ),
        ranked AS (
-         SELECT l.product_id, l.current_price_cents,
-                ROW_NUMBER() OVER (PARTITION BY l.product_id ORDER BY l.current_price_cents) AS pos,
-                COUNT(*) OVER (PARTITION BY l.product_id) AS n
-         FROM latest l
-         JOIN qualifying q ON q.product_id = l.product_id AND q.day = l.day
+         SELECT product_id, current_price_cents,
+                ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY current_price_cents) AS pos,
+                COUNT(*) OVER (PARTITION BY product_id) AS n
+         FROM latest WHERE rn = 1
        )
        SELECT product_id,
               AVG(CASE WHEN pos IN ((n + 1) / 2, (n + 2) / 2) THEN current_price_cents END) AS median_cents,
               MIN(current_price_cents) AS min_cents,
               MAX(current_price_cents) AS max_cents
-       FROM ranked GROUP BY product_id`,
+       FROM ranked GROUP BY product_id HAVING COUNT(*) >= ?3`,
     )
     .bind(ids, currentSince, PUBLIC_QUORUM)
     .all<{
