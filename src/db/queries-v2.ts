@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { markProductsDirty } from "./dirty-products";
 import type { observationV2Schema } from "../lib/schemas";
 
 export type ObservationV2Input = z.infer<typeof observationV2Schema>;
@@ -34,23 +35,25 @@ export async function deleteContributorV2(
   db: D1Database,
   contributorId: string,
 ): Promise<number> {
-  await db
+  // Delete before marking, so a refresh cannot read rows that are about to go
+  // and then clear the mark. Deletions are due immediately, not throttled.
+  const { results } = await db
     .prepare(
-      `INSERT INTO dirty_products (product_id, marked_at)
-         SELECT DISTINCT product_id, ?2 FROM observations_v2 WHERE contributor_id = ?1
-         ON CONFLICT (product_id) DO UPDATE SET marked_at = excluded.marked_at`,
+      `DELETE FROM observations_v2 WHERE contributor_id = ? RETURNING product_id`,
     )
-    .bind(contributorId, new Date().toISOString())
-    .run();
-  const result = await db
-    .prepare(`DELETE FROM observations_v2 WHERE contributor_id = ?`)
     .bind(contributorId)
-    .run();
+    .all<{ product_id: string }>();
+  await markProductsDirty(
+    db,
+    results.map((row) => row.product_id),
+    new Date(),
+    { immediate: true },
+  );
   await db
     .prepare(
       `UPDATE contributors SET status = 'deleted', deleted_at = ? WHERE id = ?`,
     )
     .bind(new Date().toISOString(), contributorId)
     .run();
-  return result.meta?.changes ?? 0;
+  return results.length;
 }

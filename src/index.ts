@@ -99,10 +99,11 @@ export default {
   scheduled: async (controller, env) => {
     // Separate invocations keep each job within Workers Free CPU and query limits.
     if (controller.cron === SNAPSHOT_CRON) {
+      // Rate-limit cleanup scans its table, so it runs half-hourly, not each minute.
+      await cleanupRateLimits(env.DB);
       await buildSnapshot(env.DB);
       return;
     }
-    await cleanupRateLimits(env.DB);
     await runRetentionStep(env.DB);
     await refreshProductStats(env.DB);
   },

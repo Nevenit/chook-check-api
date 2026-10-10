@@ -4,11 +4,14 @@ CREATE INDEX idx_v2_observed ON observations_v2(client_observed_at);
 DROP INDEX idx_v2_chain_time;
 DROP INDEX idx_v2_comparison;
 
--- Products whose public stats need recomputing.
+-- Products whose public stats need recomputing. due_at is when the refresh
+-- throttle next allows it, so the every-minute job reads only due rows.
 CREATE TABLE dirty_products (
   product_id TEXT PRIMARY KEY,
-  marked_at TEXT NOT NULL
+  marked_at TEXT NOT NULL,
+  due_at TEXT NOT NULL
 );
+CREATE INDEX idx_dirty_products_due ON dirty_products(due_at);
 
 -- Precomputed public stats; stats_json is the published entry when public.
 CREATE TABLE product_stats (
@@ -17,7 +20,8 @@ CREATE TABLE product_stats (
   stats_json TEXT,
   refreshed_at TEXT NOT NULL
 );
-CREATE INDEX idx_product_stats_refreshed ON product_stats(refreshed_at);
+-- Serves the daily recheck of public products and the snapshot's public rows.
+CREATE INDEX idx_product_stats_public_refreshed ON product_stats(public, refreshed_at);
 
 -- The published bulk snapshot, chunked below D1's 2 MB value limit.
 CREATE TABLE snapshot_chunks (
@@ -42,5 +46,7 @@ CREATE TABLE retention_progress (
 );
 
 -- Existing observations need their public stats computed once.
-INSERT INTO dirty_products (product_id, marked_at)
-SELECT DISTINCT product_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM observations_v2;
+INSERT INTO dirty_products (product_id, marked_at, due_at)
+SELECT DISTINCT product_id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM observations_v2;

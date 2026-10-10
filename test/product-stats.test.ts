@@ -231,8 +231,30 @@ describe("refreshProductStats", () => {
     await refreshProductStats(env.DB, NOW);
     expect((await stats())?.public).toBe(1);
     await deleteContributorV2(env.DB, "c0");
-    await refreshProductStats(env.DB, new Date(Date.now() + 25 * HOUR));
+    // Deletions are not throttled: the next refresh removes the prices.
+    await refreshProductStats(env.DB, new Date(Date.now() + HOUR));
     expect((await stats())?.public).toBe(0);
+  });
+
+  it("reads few rows on an idle minute once products have settled", async () => {
+    const settled = Array.from({ length: 2000 }, (_, i) => `coles:${5000 + i}`);
+    const throttled = Array.from(
+      { length: 300 },
+      (_, i) => `coles:${9000 + i}`,
+    );
+    const insertStats = (ids: string[], refreshedAt: string) =>
+      env.DB.prepare(
+        `INSERT INTO product_stats (product_id, public, stats_json, refreshed_at)
+         SELECT value, 0, NULL, ?2 FROM json_each(?1)`,
+      )
+        .bind(JSON.stringify(ids), refreshedAt)
+        .run();
+    await insertStats(settled, at(2 * DAY));
+    await insertStats(throttled, at(HOUR));
+    await markProductsDirty(env.DB, throttled, NOW);
+    const counter = countQueries(env.DB);
+    expect(await refreshProductStats(counter.db, NOW)).toBe(0);
+    expect(counter.rowsRead()).toBeLessThan(50);
   });
 
   it("refreshes a full batch within the query budget", async () => {

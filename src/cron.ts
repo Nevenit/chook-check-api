@@ -4,7 +4,7 @@ const TWENTY_SIX_HOURS_MS = 26 * 60 * 60 * 1000;
 /**
  * Delete rate_limits rows whose window has expired (older than 2 hours).
  * The active rate-limit window is 1 hour, so 2 hours guarantees rows are
- * unused before deletion. Triggered hourly by the cron handler.
+ * unused before deletion. Runs with the 30-minute snapshot job.
  */
 export async function cleanupRateLimits(db: D1Database): Promise<number> {
   const shortCutoff = new Date(Date.now() - TWO_HOURS_MS).toISOString();

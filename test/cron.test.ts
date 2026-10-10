@@ -8,6 +8,7 @@ import { cleanupRateLimits, runRetentionStep } from "../src/cron";
 import worker from "../src/index";
 import { D1_QUERY_BUDGET } from "../src/lib/limits";
 import { SNAPSHOT_CRON } from "../src/lib/snapshot";
+import { markProductsDirty } from "../src/db/dirty-products";
 import { countQueries } from "./query-budget";
 import { cleanDb } from "./helpers";
 
@@ -177,13 +178,35 @@ describe("scheduled handler", () => {
     expect(meta).toEqual({ product_count: 0 });
   });
 
+  it("cleans rate limits with the 30-minute job, not every minute", async () => {
+    await insertRateLimit(
+      "old",
+      new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    );
+    const remaining = async () =>
+      (
+        await env.DB.prepare("SELECT COUNT(*) AS n FROM rate_limits").first<{
+          n: number;
+        }>()
+      )?.n;
+    for (const [cron, expected] of [
+      ["* * * * *", 1],
+      [SNAPSHOT_CRON, 0],
+    ] as const) {
+      const ctx = createExecutionContext();
+      await handler.scheduled!(
+        { cron, scheduledTime: Date.now(), noRetry() {} },
+        env,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      expect(await remaining()).toBe(expected);
+    }
+  });
+
   it("refreshes stats and applies retention on the minute cron", async () => {
     await insertAged("c0", 500, 181);
-    await env.DB.prepare(
-      "INSERT INTO dirty_products (product_id, marked_at) VALUES ('woolworths:123', ?)",
-    )
-      .bind(new Date().toISOString())
-      .run();
+    await markProductsDirty(env.DB, ["woolworths:123"], new Date());
     const ctx = createExecutionContext();
     await handler.scheduled!(
       { cron: "* * * * *", scheduledTime: Date.now(), noRetry() {} },

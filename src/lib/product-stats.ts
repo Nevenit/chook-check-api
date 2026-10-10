@@ -1,6 +1,4 @@
 export const STATS_BATCH_SIZE = 100;
-// Once a day keeps a full refresh pass within Workers Free's 5M rows read/day.
-export const DIRTY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const STALE_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RAW_WINDOW_DAYS = 180;
 const CURRENT_WINDOW_DAYS = 90;
@@ -25,16 +23,21 @@ export interface SnapshotProduct {
 const ago = (now: Date, ms: number) =>
   new Date(now.getTime() - ms).toISOString();
 
-async function selectProducts(db: D1Database, now: Date): Promise<string[]> {
+interface Selection {
+  productIds: string[];
+  /** The dirty marks read, cleared after the refresh unless re-marked. */
+  marks: Array<[productId: string, markedAt: string]>;
+}
+
+// Both queries read index ranges, so an idle minute costs a few rows.
+async function selectProducts(db: D1Database, now: Date): Promise<Selection> {
   const { results: dirty } = await db
     .prepare(
-      `SELECT d.product_id FROM dirty_products d
-       LEFT JOIN product_stats s ON s.product_id = d.product_id
-       WHERE s.refreshed_at IS NULL OR s.refreshed_at <= ?1
-       ORDER BY d.marked_at LIMIT ?2`,
+      `SELECT product_id, marked_at FROM dirty_products
+       WHERE due_at <= ?1 ORDER BY due_at LIMIT ?2`,
     )
-    .bind(ago(now, DIRTY_REFRESH_INTERVAL_MS), STATS_BATCH_SIZE)
-    .all<{ product_id: string }>();
+    .bind(now.toISOString(), STATS_BATCH_SIZE)
+    .all<{ product_id: string; marked_at: string }>();
   const ids = new Set(dirty.map((row) => row.product_id));
   if (ids.size < STATS_BATCH_SIZE) {
     // Windows slide even without new data, so public stats are recomputed daily.
@@ -48,7 +51,10 @@ async function selectProducts(db: D1Database, now: Date): Promise<string[]> {
       .all<{ product_id: string }>();
     for (const row of stale) ids.add(row.product_id);
   }
-  return [...ids];
+  return {
+    productIds: [...ids],
+    marks: dirty.map((row) => [row.product_id, row.marked_at]),
+  };
 }
 
 /** Recompute public stats for up to one batch of products in seven queries. */
@@ -56,7 +62,7 @@ export async function refreshProductStats(
   db: D1Database,
   now = new Date(),
 ): Promise<number> {
-  const productIds = await selectProducts(db, now);
+  const { productIds, marks } = await selectProducts(db, now);
   if (productIds.length === 0) return 0;
   const ids = JSON.stringify(productIds);
   const rawSince = ago(now, RAW_WINDOW_DAYS * DAY_MS);
@@ -193,13 +199,19 @@ export async function refreshProductStats(
     )
     .bind(JSON.stringify(entries), now.toISOString())
     .run();
-  // Marks made after this run started stay queued for the next refresh.
-  await db
-    .prepare(
-      `DELETE FROM dirty_products
-       WHERE product_id IN (SELECT value FROM json_each(?1)) AND marked_at <= ?2`,
-    )
-    .bind(ids, now.toISOString())
-    .run();
+  // Clear only the marks this run read; a product re-marked meanwhile (or
+  // marked after the run started) stays queued for its next refresh.
+  if (marks.length > 0) {
+    await db
+      .prepare(
+        `DELETE FROM dirty_products
+         WHERE (product_id, marked_at) IN (
+           SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]')
+           FROM json_each(?1))
+           AND marked_at <= ?2`,
+      )
+      .bind(JSON.stringify(marks), now.toISOString())
+      .run();
+  }
   return productIds.length;
 }
